@@ -1,0 +1,5 @@
+{
+  "name": "Lead Management CRM",
+  "description": "A simple lead management CRM with Meta Webhooks, Supabase, and Gemini PDF reports.",
+  "requestFramePermissions": []
+}
