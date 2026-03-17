@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { createClient } from '@supabase/supabase-js';
@@ -34,7 +33,14 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Gemini client
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+let ai: GoogleGenAI | null = null;
+try {
+  if (GEMINI_API_KEY) {
+    ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  }
+} catch (e) {
+  console.warn('Failed to initialize Gemini client:', e);
+}
 
 // Authentication Middleware
 const authenticateToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -267,6 +273,10 @@ ${leadsDataString}
 
 Output ONLY a valid JSON array of objects representing the rows of the report. The keys should be: "Name", "Email", "Phone", "Ad Set", "Date", "Qualifying Answer", "Status". Do not include markdown codeblocks like \`\`\`json. Just the raw JSON array.`;
 
+    if (!ai) {
+      throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY environment variable.');
+    }
+
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-pro-preview',
       contents: prompt,
@@ -339,6 +349,7 @@ Output ONLY a valid JSON array of objects representing the rows of the report. T
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -352,9 +363,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
