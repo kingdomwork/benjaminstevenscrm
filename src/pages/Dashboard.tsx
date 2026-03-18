@@ -27,16 +27,33 @@ export default function Dashboard({
     try {
       const res = await fetch('/api/leads/upload', {
         method: 'POST',
+        headers: {
+          'Accept': 'application/json'
+        },
         body: formData,
       });
 
       if (res.ok) {
-        const result = await res.json();
-        alert(`Successfully imported ${result.count} leads!`);
-        fetchLeads();
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const result = await res.json();
+          alert(`Successfully imported ${result.count} leads!`);
+          fetchLeads();
+        } else {
+          const text = await res.text();
+          console.error('Unexpected response:', text);
+          alert('Upload failed: Server returned an unexpected response.');
+        }
       } else {
-        const err = await res.json();
-        alert(`Upload failed: ${err.error}`);
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const err = await res.json();
+          alert(`Upload failed: ${err.error}`);
+        } else {
+          const text = await res.text();
+          console.error('Unexpected error response:', text);
+          alert(`Upload failed with status ${res.status}.`);
+        }
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -157,7 +174,7 @@ export default function Dashboard({
                       <span className="text-xs text-gray-400">{format(new Date(lead.created_at), 'h:mm a')}</span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">{lead.first_name} {lead.last_name}</div>
+                      <div className="text-sm font-medium text-gray-900">{lead.full_name || `${lead.first_name || ''} ${lead.last_name || ''}`.trim()}</div>
                       <div className="text-sm text-gray-500">{lead.email}</div>
                       <div className="text-sm text-gray-500">{lead.phone}</div>
                     </td>

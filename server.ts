@@ -64,7 +64,7 @@ app.post('/api/auth/login', (req, res) => {
   const { password } = req.body;
   if (password === LOGIN_PASSWORD) {
     const token = jwt.sign({ user: 'admin' }, JWT_SECRET, { expiresIn: '24h' });
-    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict' });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none' });
     res.json({ success: true });
   } else {
     res.status(401).json({ error: 'Invalid password' });
@@ -114,7 +114,6 @@ app.post('/api/webhook/meta', async (req, res) => {
             // In a real app, you would fetch the lead details from Meta Graph API using the leadgen_id
             // For this example, we'll assume the webhook payload contains the data or we mock it if missing
             // Meta Lead Gen webhook only sends leadgen_id, you must fetch the actual data.
-            // But the prompt says "Fields to capture: First Name, Last Name, Email, Phone, Ad Set Name, Campaign Name, Date/Time, Qualifying Question Answer."
             
             let leadDetails: any = {};
             
@@ -130,6 +129,7 @@ app.post('/api/webhook/meta', async (req, res) => {
             } else {
               // Fallback/Mock for testing if no token or id
               leadDetails = {
+                full_name: 'Test Lead',
                 first_name: 'Test',
                 last_name: 'Lead',
                 email: 'test@example.com',
@@ -140,19 +140,35 @@ app.post('/api/webhook/meta', async (req, res) => {
               };
             }
 
+            // Extract names safely
+            const fullName = leadDetails.full_name || `${leadDetails.first_name || ''} ${leadDetails.last_name || ''}`.trim();
+            const firstName = leadDetails.first_name || (fullName ? fullName.split(' ')[0] : '');
+            const lastName = leadDetails.last_name || (fullName ? fullName.split(' ').slice(1).join(' ') : '');
+
             // Insert into Supabase
             const { error } = await supabase
               .from('leads')
               .insert([
                 {
                   leadgen_id: leadData.leadgen_id || '',
-                  first_name: leadDetails.first_name || '',
-                  last_name: leadDetails.last_name || '',
+                  meta_created_time: leadData.created_time || null,
+                  ad_id: leadData.ad_id || '',
+                  ad_name: leadData.ad_name || '',
+                  adset_id: leadData.adset_id || '',
+                  ad_set_name: leadDetails.ad_set_name || leadData.adset_name || leadData.ad_set_name || '',
+                  campaign_id: leadData.campaign_id || '',
+                  campaign_name: leadDetails.campaign_name || leadData.campaign_name || '',
+                  form_id: leadData.form_id || '',
+                  form_name: leadData.form_name || '',
+                  is_organic: leadData.is_organic === 'true' || leadData.is_organic === true,
+                  platform: leadData.platform || '',
+                  first_name: firstName,
+                  last_name: lastName,
+                  full_name: fullName,
                   email: leadDetails.email || '',
                   phone: leadDetails.phone || '',
-                  ad_set_name: leadDetails.ad_set_name || leadData.ad_set_name || '',
-                  campaign_name: leadDetails.campaign_name || leadData.campaign_name || '',
-                  qualifying_answer: leadDetails.qualifying_answer || leadDetails['Do you currently have a documented, court-ready compliance trail for all your rental properties to meet the new Section 8 mandatory possession requirements?'] || '',
+                  qualifying_answer: leadDetails.qualifying_answer || leadDetails['do_you_currently_have_a_documented,_court-ready_compliance_trail_for_all_your_rental_properties_to_meet_the_new_section_8_mandatory_possession_requirements?'] || leadDetails['Do you currently have a documented, court-ready compliance trail for all your rental properties to meet the new Section 8 mandatory possession requirements?'] || '',
+                  meta_lead_status: leadDetails.lead_status || '',
                   status: 'pending'
                 }
               ]);
@@ -363,18 +379,28 @@ app.get('/api/leads/export', authenticateToken, async (req, res) => {
       return res.status(404).send('No leads found');
     }
 
-    const headers = ['Name', 'Email', 'Phone', 'Ad Set', 'Campaign', 'Date', 'Qualifying Answer', 'Status'];
+    const headers = ['Leadgen ID', 'Created Time', 'Ad ID', 'Ad Name', 'Adset ID', 'Ad Set Name', 'Campaign ID', 'Campaign Name', 'Form ID', 'Form Name', 'Is Organic', 'Platform', 'Full Name', 'Email', 'Phone', 'Qualifying Answer', 'Meta Lead Status', 'CRM Status'];
     const csvRows = [headers.join(',')];
 
     for (const lead of leads) {
       const row = [
-        `"${lead.first_name || ''} ${lead.last_name || ''}"`,
+        `"${lead.leadgen_id || ''}"`,
+        `"${lead.meta_created_time || new Date(lead.created_at).toISOString()}"`,
+        `"${lead.ad_id || ''}"`,
+        `"${lead.ad_name || ''}"`,
+        `"${lead.adset_id || ''}"`,
+        `"${lead.ad_set_name || ''}"`,
+        `"${lead.campaign_id || ''}"`,
+        `"${lead.campaign_name || ''}"`,
+        `"${lead.form_id || ''}"`,
+        `"${lead.form_name || ''}"`,
+        `"${lead.is_organic || 'false'}"`,
+        `"${lead.platform || ''}"`,
+        `"${lead.full_name || `${lead.first_name || ''} ${lead.last_name || ''}`.trim()}"`,
         `"${lead.email || ''}"`,
         `"${lead.phone || ''}"`,
-        `"${lead.ad_set_name || ''}"`,
-        `"${lead.campaign_name || ''}"`,
-        `"${new Date(lead.created_at).toLocaleDateString()}"`,
         `"${(lead.qualifying_answer || '').replace(/"/g, '""')}"`,
+        `"${lead.meta_lead_status || ''}"`,
         `"${lead.status || ''}"`
       ];
       csvRows.push(row.join(','));
@@ -390,7 +416,15 @@ app.get('/api/leads/export', authenticateToken, async (req, res) => {
 });
 
 // 10. Upload CSV and Parse with Gemini
-app.post('/api/leads/upload', authenticateToken, upload.single('file'), async (req, res) => {
+app.post('/api/leads/upload', authenticateToken, (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('Multer error:', err);
+      return res.status(400).json({ error: err.message || 'File upload failed' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -406,13 +440,23 @@ app.post('/api/leads/upload', authenticateToken, upload.single('file'), async (r
 Your task is to extract the leads and structure them into a JSON array.
 
 Map the columns to these exact keys for each lead object:
-- first_name (string)
-- last_name (string)
-- email (string)
-- phone (string)
-- ad_set_name (string)
+- leadgen_id (string, map from 'id')
+- meta_created_time (string, map from 'created_time')
+- ad_id (string)
+- ad_name (string)
+- adset_id (string)
+- ad_set_name (string, map from 'adset_name')
+- campaign_id (string)
 - campaign_name (string)
-- qualifying_answer (string)
+- form_id (string)
+- form_name (string)
+- is_organic (string)
+- platform (string)
+- qualifying_answer (string, map from 'do_you_currently_have_a_documented,_court-ready_compliance_trail_for_all_your_rental_properties_to_meet_the_new_section_8_mandatory_possession_requirements?' or similar)
+- email (string)
+- full_name (string)
+- phone (string)
+- meta_lead_status (string, map from 'lead_status')
 
 If a field is missing or unclear, leave it as an empty string. Try to split full names into first_name and last_name if only a "Name" column exists.
 
@@ -442,16 +486,34 @@ Output ONLY a valid JSON array of objects. Do not include markdown formatting li
     }
 
     // Add default status and prepare for insert
-    const leadsToInsert = parsedLeads.map(lead => ({
-      first_name: lead.first_name || '',
-      last_name: lead.last_name || '',
-      email: lead.email || '',
-      phone: lead.phone || '',
-      ad_set_name: lead.ad_set_name || 'Manual CSV Upload',
-      campaign_name: lead.campaign_name || 'Manual CSV Upload',
-      qualifying_answer: lead.qualifying_answer || '',
-      status: 'pending'
-    }));
+    const leadsToInsert = parsedLeads.map((lead: any) => {
+      const fullName = lead.full_name || `${lead.first_name || ''} ${lead.last_name || ''}`.trim();
+      const firstName = lead.first_name || (fullName ? fullName.split(' ')[0] : '');
+      const lastName = lead.last_name || (fullName ? fullName.split(' ').slice(1).join(' ') : '');
+
+      return {
+        leadgen_id: lead.leadgen_id || '',
+        meta_created_time: lead.meta_created_time || null,
+        ad_id: lead.ad_id || '',
+        ad_name: lead.ad_name || '',
+        adset_id: lead.adset_id || '',
+        ad_set_name: lead.ad_set_name || 'Manual CSV Upload',
+        campaign_id: lead.campaign_id || '',
+        campaign_name: lead.campaign_name || 'Manual CSV Upload',
+        form_id: lead.form_id || '',
+        form_name: lead.form_name || '',
+        is_organic: lead.is_organic === 'true' || lead.is_organic === true,
+        platform: lead.platform || '',
+        first_name: firstName,
+        last_name: lastName,
+        full_name: fullName,
+        email: lead.email || '',
+        phone: lead.phone || '',
+        qualifying_answer: lead.qualifying_answer || '',
+        meta_lead_status: lead.meta_lead_status || '',
+        status: 'pending'
+      };
+    });
 
     const { data, error } = await supabase
       .from('leads')
@@ -483,6 +545,11 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Express Error:', err);
+    res.status(500).json({ error: err.message || 'Internal Server Error' });
+  });
 
   if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
     app.listen(PORT, '0.0.0.0', () => {
