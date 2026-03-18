@@ -1,8 +1,76 @@
-import React from 'react';
-import { CheckCircle, XCircle, Loader2, Info } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { CheckCircle, XCircle, Loader2, Info, Upload, Download } from 'lucide-react';
 import { format } from 'date-fns';
 
-export default function Dashboard({ leads, loading, updateLeadStatus }: { leads: any[], loading: boolean, updateLeadStatus: (id: string, status: string) => void }) {
+export default function Dashboard({ 
+  leads, 
+  loading, 
+  updateLeadStatus, 
+  fetchLeads 
+}: { 
+  leads: any[], 
+  loading: boolean, 
+  updateLeadStatus: (id: string, status: string) => void,
+  fetchLeads: () => void
+}) {
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/leads/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        alert(`Successfully imported ${result.count} leads!`);
+        fetchLeads();
+      } else {
+        const err = await res.json();
+        alert(`Upload failed: ${err.error}`);
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      alert('Upload failed. Please try again.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const res = await fetch('/api/leads/export');
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'leads-export.csv';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+      } else {
+        alert('Failed to export leads');
+      }
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Failed to export leads');
+    }
+  };
+
   return (
     <>
       <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-8 flex items-start">
@@ -15,6 +83,34 @@ export default function Dashboard({ leads, loading, updateLeadStatus }: { leads:
             <li>Use the Verify Token specified in your environment variables.</li>
             <li>Ensure your Supabase table "leads" is created according to the schema.</li>
           </ul>
+        </div>
+      </div>
+
+      <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <h1 className="text-2xl font-bold text-gray-900">Lead Management</h1>
+        <div className="flex space-x-3">
+          <input 
+            type="file" 
+            accept=".csv" 
+            className="hidden" 
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+          >
+            {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+            Import CSV
+          </button>
+          <button
+            onClick={handleExport}
+            className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export CSV
+          </button>
         </div>
       </div>
 

@@ -158,7 +158,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route element={<Layout handleLogout={handleLogout} generateReport={generateReport} generatingReport={generatingReport} />}>
-          <Route path="/" element={<Dashboard leads={leads} loading={loading} updateLeadStatus={updateLeadStatus} />} />
+          <Route path="/" element={<Dashboard leads={leads} loading={loading} updateLeadStatus={updateLeadStatus} fetchLeads={fetchLeads} />} />
           <Route path="/analytics" element={<Analytics leads={leads} />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />

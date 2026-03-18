@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import crypto from 'crypto';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,9 +20,11 @@ app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
 
+const upload = multer({ storage: multer.memoryStorage() });
+
 // Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 const META_PIXEL_ID = process.env.META_PIXEL_ID || '';
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
@@ -30,7 +33,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-change-in-pro
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // Supabase client
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Gemini client
 let ai: GoogleGenAI | null = null;
@@ -342,6 +345,124 @@ Output ONLY a valid JSON array of objects representing the rows of the report. T
     res.send(pdfBuffer);
   } catch (error: any) {
     console.error('Report generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 9. Export Leads to CSV
+app.get('/api/leads/export', authenticateToken, async (req, res) => {
+  try {
+    const { data: leads, error } = await supabase
+      .from('leads')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    if (!leads || leads.length === 0) {
+      return res.status(404).send('No leads found');
+    }
+
+    const headers = ['Name', 'Email', 'Phone', 'Ad Set', 'Campaign', 'Date', 'Qualifying Answer', 'Status'];
+    const csvRows = [headers.join(',')];
+
+    for (const lead of leads) {
+      const row = [
+        `"${lead.first_name || ''} ${lead.last_name || ''}"`,
+        `"${lead.email || ''}"`,
+        `"${lead.phone || ''}"`,
+        `"${lead.ad_set_name || ''}"`,
+        `"${lead.campaign_name || ''}"`,
+        `"${new Date(lead.created_at).toLocaleDateString()}"`,
+        `"${(lead.qualifying_answer || '').replace(/"/g, '""')}"`,
+        `"${lead.status || ''}"`
+      ];
+      csvRows.push(row.join(','));
+    }
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=leads-export.csv');
+    res.send(csvRows.join('\n'));
+  } catch (error: any) {
+    console.error('Export error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 10. Upload CSV and Parse with Gemini
+app.post('/api/leads/upload', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const csvContent = req.file.buffer.toString('utf-8');
+
+    if (!ai) {
+      throw new Error('Gemini API key is not configured.');
+    }
+
+    const prompt = `You are an expert data parser. I am providing you with the raw text of a CSV file containing lead information.
+Your task is to extract the leads and structure them into a JSON array.
+
+Map the columns to these exact keys for each lead object:
+- first_name (string)
+- last_name (string)
+- email (string)
+- phone (string)
+- ad_set_name (string)
+- campaign_name (string)
+- qualifying_answer (string)
+
+If a field is missing or unclear, leave it as an empty string. Try to split full names into first_name and last_name if only a "Name" column exists.
+
+Here is the CSV content:
+${csvContent}
+
+Output ONLY a valid JSON array of objects. Do not include markdown formatting like \`\`\`json.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-pro-preview',
+      contents: prompt,
+    });
+
+    let jsonContent = response.text || '[]';
+    jsonContent = jsonContent.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    let parsedLeads = [];
+    try {
+      parsedLeads = JSON.parse(jsonContent);
+    } catch (e) {
+      console.error('Failed to parse Gemini JSON:', e);
+      throw new Error('Failed to parse leads from CSV');
+    }
+
+    if (!Array.isArray(parsedLeads) || parsedLeads.length === 0) {
+      return res.status(400).json({ error: 'No valid leads found in the CSV' });
+    }
+
+    // Add default status and prepare for insert
+    const leadsToInsert = parsedLeads.map(lead => ({
+      first_name: lead.first_name || '',
+      last_name: lead.last_name || '',
+      email: lead.email || '',
+      phone: lead.phone || '',
+      ad_set_name: lead.ad_set_name || 'Manual CSV Upload',
+      campaign_name: lead.campaign_name || 'Manual CSV Upload',
+      qualifying_answer: lead.qualifying_answer || '',
+      status: 'pending'
+    }));
+
+    const { data, error } = await supabase
+      .from('leads')
+      .insert(leadsToInsert)
+      .select();
+
+    if (error) throw error;
+
+    res.json({ success: true, count: leadsToInsert.length, leads: data });
+  } catch (error: any) {
+    console.error('Upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
